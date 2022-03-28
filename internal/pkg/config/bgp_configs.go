@@ -2580,6 +2580,11 @@ type TransportConfig struct {
 	// may be expressed as either an IP address or reference
 	// to the name of an interface.
 	LocalAddress string `mapstructure:"local-address" json:"local-address,omitempty"`
+	// original -> gobgp:local-port
+	// gobgp:local-port's original type is inet:port-number.
+	// Set the local port (if available) to use for the session
+	// when sending BGP update messages.
+	LocalPort uint16 `mapstructure:"local-port" json:"local-port,omitempty"`
 	// original -> gobgp:remote-port
 	// gobgp:remote-port's original type is inet:port-number.
 	RemotePort uint16 `mapstructure:"remote-port" json:"remote-port,omitempty"`
