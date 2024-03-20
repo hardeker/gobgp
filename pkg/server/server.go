@@ -397,6 +397,7 @@ func (s *BgpServer) Serve() {
 			// canceled
 			addr := fsm.pConf.State.NeighborAddress
 			state := fsm.state
+			nextState := e.MsgData.(bgp.FSMState)
 
 			fsm.h.wg.Wait()
 
@@ -406,7 +407,9 @@ func (s *BgpServer) Serve() {
 					"Key":   addr,
 					"State": state})
 
-			if state == bgp.BGP_FSM_ACTIVE {
+			if (state == bgp.BGP_FSM_ACTIVE && nextState == bgp.BGP_FSM_OPENSENT) ||
+				(state == bgp.BGP_FSM_OPENSENT && nextState == bgp.BGP_FSM_OPENCONFIRM) ||
+				(state == bgp.BGP_FSM_OPENCONFIRM && nextState == bgp.BGP_FSM_ESTABLISHED) {
 				var conn net.Conn
 				select {
 				case conn = <-fsm.connCh:
@@ -423,7 +426,8 @@ func (s *BgpServer) Serve() {
 							log.Fields{
 								"Topic": "Peer",
 								"Key":   addr,
-								"State": state})
+								"State": state,
+								"Err":   err})
 					}
 				}
 			}

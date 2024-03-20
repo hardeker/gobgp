@@ -220,12 +220,20 @@ func waitState(s *BgpServer, ch chan struct{}, state api.PeerState_SessionState)
 	watchCtx, watchCancel := context.WithCancel(context.Background())
 	s.WatchEvent(watchCtx, &api.WatchEventRequest{Peer: &api.WatchEventRequest_Peer{}}, func(r *api.WatchEventResponse) {
 		if peer := r.GetPeer(); peer != nil {
-			if peer.Type == api.WatchEventResponse_PeerEvent_STATE && peer.Peer.State.SessionState == state {
+			fmt.Println("state changed to ", peer.Peer.State.SessionState, "expecting ", state)
+			fmt.Println("peer type ", peer.Type, "expecting ", api.WatchEventResponse_PeerEvent_STATE)
+			if (peer.Type == api.WatchEventResponse_PeerEvent_STATE || peer.Type == api.WatchEventResponse_PeerEvent_END_OF_INIT) &&
+				peer.Peer.State.SessionState == state {
+				fmt.Println("CLOSING CHANNEL")
 				close(ch)
 				watchCancel()
 			}
 		}
 	})
+}
+
+func waitIdle(s *BgpServer, ch chan struct{}) {
+	waitState(s, ch, api.PeerState_IDLE)
 }
 
 func waitActive(s *BgpServer, ch chan struct{}) {
@@ -1386,23 +1394,6 @@ func TestTcpConnectionClosedAfterPeerDel(t *testing.T) {
 			PassiveMode: true,
 		},
 	}
-
-	activeCh := make(chan struct{})
-	go waitActive(s1, activeCh)
-	err = s1.AddPeer(context.Background(), &api.AddPeerRequest{Peer: p1})
-	assert.Nil(err)
-	<-activeCh
-
-	// We delete the peer incoming channel from the server list so that we can
-	// intercept the transition from ACTIVE state to OPENSENT state.
-	neighbor1 := s1.neighborMap[p1.Conf.NeighborAddress]
-	incoming := neighbor1.fsm.incomingCh
-	err = s1.mgmtOperation(func() error {
-		s1.delIncoming(incoming)
-		return nil
-	}, true)
-	assert.Nil(err)
-
 	s2 := NewBgpServer()
 	go s2.Serve()
 	err = s2.StartBgp(context.Background(), &api.StartBgpRequest{
@@ -1414,7 +1405,6 @@ func TestTcpConnectionClosedAfterPeerDel(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer s2.StopBgp(context.Background(), &api.StopBgpRequest{})
-
 	p2 := &api.Peer{
 		Conf: &api.PeerConf{
 			NeighborAddress: "127.0.0.1",
@@ -1431,10 +1421,27 @@ func TestTcpConnectionClosedAfterPeerDel(t *testing.T) {
 		},
 	}
 
+	// Part 1: test transition from ACTIVE state to OPENSENT state
+	activeCh := make(chan struct{})
+	go waitActive(s1, activeCh)
+	err = s1.AddPeer(context.Background(), &api.AddPeerRequest{Peer: p1})
+	assert.Nil(err)
+	<-activeCh
+
+	// We delete the peer incoming channel from the server list so that we can
+	// intercept the transition from ACTIVE state to OPENSENT state.
+	neighbor1 := s1.neighborMap[p1.Conf.NeighborAddress]
+	incoming := neighbor1.fsm.incomingCh
+	err = s1.mgmtOperation(func() error {
+		s1.delIncoming(incoming)
+		return nil
+	}, true)
+	assert.Nil(err)
+
 	err = s2.AddPeer(context.Background(), &api.AddPeerRequest{Peer: p2})
 	assert.Nil(err)
 
-	// Wait for the s1 to receive the tcp connection from s2.
+	// Wait for server s1 to receive the tcp connection from server s2.
 	ev := <-incoming.Out()
 	msg := ev.(*fsmMsg)
 	nextState := msg.MsgData.(bgp.FSMState)
@@ -1460,12 +1467,47 @@ func TestTcpConnectionClosedAfterPeerDel(t *testing.T) {
 	<-neighbor1.fsm.connCh
 	assert.Empty(neighbor1.fsm.conn)
 
+	// Delete the peer from server s2 to start the BGP peering from scratch
+	err = s2.DeletePeer(context.Background(), &api.DeletePeerRequest{Address: p2.Conf.NeighborAddress})
+	assert.Nil(err)
+
+	// Part 2: test transition from OPENSENT state to OPENCONFIRM state
+	activeCh = make(chan struct{})
+	go waitActive(s1, activeCh)
+	err = s1.AddPeer(context.Background(), &api.AddPeerRequest{Peer: p1})
+	assert.Nil(err)
+	<-activeCh
+
+	// We delete the peer incoming channel from the server list so that we can
+	// intercept the transition from ACTIVE state to OPENSENT state.
+	neighbor1 = s1.neighborMap[p1.Conf.NeighborAddress]
+	incoming = neighbor1.fsm.incomingCh
+	err = s1.mgmtOperation(func() error {
+		s1.delIncoming(incoming)
+		return nil
+	}, true)
+	assert.Nil(err)
+
+	err = s2.AddPeer(context.Background(), &api.AddPeerRequest{Peer: p2})
+	assert.Nil(err)
+
 	// Check that we can establish the peering when re-adding the peer.
 	establishedCh := make(chan struct{})
 	go waitEstablished(s2, establishedCh)
 	err = s1.AddPeer(context.Background(), &api.AddPeerRequest{Peer: p1})
 	assert.Nil(err)
 	<-establishedCh
+
+	// Delete the peer from s1, wait for the state to come back to active, and check that the old tcp connection has been closed.
+	neighbor1 = s1.neighborMap[p1.Conf.NeighborAddress]
+	idleCh := make(chan struct{})
+	go waitIdle(s1, idleCh)
+	err = s1.DeletePeer(context.Background(), &api.DeletePeerRequest{Address: p1.Conf.NeighborAddress})
+	assert.Nil(err)
+	fmt.Println("waiting for idle")
+	<-idleCh
+	fmt.Println("IDLE")
+	assert.Empty(neighbor1.fsm.conn)
 }
 
 func TestFamiliesForSoftreset(t *testing.T) {
