@@ -830,7 +830,7 @@ func buildopen(gConf *oc.Global, pConf *oc.Neighbor) *bgp.BGPMessage {
 	if as > (1<<16)-1 {
 		as = bgp.AS_TRANS
 	}
-	return bgp.NewBGPOpenMessage(uint16(as), holdTime, gConf.Config.RouterId,
+	return bgp.NewBGPOpenMessage(uint16(as), holdTime, pConf.Transport.Config.LocalAddress,
 		[]bgp.OptionParameterInterface{opt})
 }
 
