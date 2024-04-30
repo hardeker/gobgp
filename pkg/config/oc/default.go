@@ -530,7 +530,7 @@ func overwriteConfig(c, pg interface{}, tagPrefix string, v *viper.Viper) {
 				}
 			}
 			return false
-		}() || !v.IsSet(tag) {
+		}() || (!v.IsSet(tag) && nValue.FieldByName(field).IsZero()) {
 			nValue.FieldByName(field).Set(pgValue.FieldByName(field))
 		}
 	}
